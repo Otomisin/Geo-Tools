@@ -100,15 +100,17 @@ class RasterProcessing(object):
             parameterType="Optional",
             direction="Input"
         )
-        filter_threshold.filter.list = ["None", "1", "0"]
+        # filter_threshold.filter.list = ["None", "1", "0"]
+        filter_threshold.filter.list = [
+            "None", "Above Threshold (1)", "Below Threshold (0)"]
         filter_threshold.value = "None"
-        filter_threshold.description = "Filter polygons based on the binary column: 1 means all polygons above the set Filter Value, 0 means below, and None means all polygons."
+        filter_threshold.description = "Choose whether to filter polygons based on population threshold: 'Above Threshold' keeps polygons with population above the threshold value, 'Below Threshold' keeps polygons below it, and 'None' keeps all polygons."
 
         subadmin_boundary = arcpy.Parameter(
             displayName="Subadministrative Boundary",
             name="subadmin_boundary",
             datatype="GPFeatureLayer",
-            parameterType="Required",
+            parameterType="Optional",
             direction="Input"
         )
 
@@ -140,6 +142,21 @@ class RasterProcessing(object):
         arcpy.env.overwriteOutput = True
 
         try:
+            arcpy.CheckOutExtension("Spatial")
+
+            # Check for active map at the start
+            has_active_map = False
+            try:
+                aprx = arcpy.mp.ArcGISProject("CURRENT")
+                if aprx.activeMap:
+                    has_active_map = True
+                else:
+                    messages.addWarningMessage(
+                        "No active map found - layers will be created but not added to display")
+            except Exception:
+                messages.addWarningMessage(
+                    "Could not access map document - layers will be created but not added to display")
+
             arcpy.CheckOutExtension("Spatial")
 
             # Step 1: Clip raster to admin boundary
@@ -260,6 +277,7 @@ class RasterProcessing(object):
             )
 
             # Step 11: Filter based on Binary column (if specified)
+            filtered_output = agg2_zstats_output  # Default to unfiltered output
             if filter_threshold != "None":
                 filtered_output_name = f"{agg2_zstats_name}_filtered"
                 filtered_output = os.path.join(
@@ -273,10 +291,11 @@ class RasterProcessing(object):
                 )
 
                 # Apply the selection on the layer
+                actual_threshold = "1" if "Above" in filter_threshold else "0"
                 arcpy.management.SelectLayerByAttribute(
                     in_layer_or_view=temp_layer,
                     selection_type="NEW_SELECTION",
-                    where_clause=f"{binary_column} = {filter_threshold}"
+                    where_clause=f"{binary_column} = {actual_threshold}"
                 )
 
                 # Copy the selected features to the new output
@@ -346,17 +365,24 @@ class RasterProcessing(object):
             )
 
             # Step 13: Union with Subadmin boundary
-            messages.addMessage("\nPerforming Union with Subadmin boundary...")
-            union_name = f"{output_prefix}_EucAllo_Union"
-            union_output = os.path.join(output_gdb, union_name)
+            if subadmin_boundary:
+                messages.addMessage(
+                    "\nPerforming Union with Subadmin boundary...")
+                union_name = f"{output_prefix}_EucAllo_Union"
+                union_output = os.path.join(output_gdb, union_name)
 
-            arcpy.analysis.Union(
-                in_features=[raster_poly_output, subadmin_boundary],
-                out_feature_class=union_output,
-                join_attributes="ALL",
-                cluster_tolerance=None,
-                gaps="NO_GAPS"
-            )
+                arcpy.analysis.Union(
+                    in_features=[raster_poly_output, subadmin_boundary],
+                    out_feature_class=union_output,
+                    join_attributes="ALL",
+                    cluster_tolerance=None,
+                    gaps="NO_GAPS"
+                )
+                base_features_for_singlepart = union_output
+            else:
+                messages.addMessage(
+                    "\nSkipping Union step (no subadmin boundary provided)...")
+                base_features_for_singlepart = raster_poly_output
 
             # Step 14: Convert multipart to singlepart
             messages.addMessage("\nConverting multipart to singlepart...")
@@ -364,7 +390,7 @@ class RasterProcessing(object):
             singlepart_output = os.path.join(output_gdb, singlepart_name)
 
             arcpy.management.MultipartToSinglepart(
-                in_features=union_output,
+                in_features=base_features_for_singlepart,
                 out_feature_class=singlepart_output
             )
 
@@ -413,46 +439,131 @@ class RasterProcessing(object):
                 expression_type="PYTHON3"
             )
 
-            # Add the final output to the map
-            self.add_to_map(final_output, final_output_name, messages)
+            #################################################
+            # ADDING LAYERS TO MAP ##########################
+            #################################################
 
-            # Add outputs to the current map
-            # Add outputs to the current map in order of operations
-            # Step 1: Clipped raster
+            # # Add the final output to the map
+            # self.add_to_map(final_output, final_output_name, messages)
+
+            # # Add outputs to the current map
+            # # Add outputs to the current map in order of operations
+            # # Step 1: Clipped raster
+            # self.add_to_map(clipped_raster, clipped_name, messages)
+
+            # # Step 2: Binary raster
+            # self.add_to_map(os.path.join(
+            #     output_gdb, binary_name), binary_name, messages)
+
+            # # Step 3: Initial polygon conversion
+            # self.add_to_map(out_polygons, polygon_name, messages)
+
+            # # Step 4-7: Bounding geometry and aggregation steps
+            # self.add_to_map(mb1_output, mb1_name, messages)
+            # self.add_to_map(agg1_output, agg1_name, messages)
+            # self.add_to_map(mb2_output, mb2_name, messages)
+            # self.add_to_map(agg2_output, agg2_name, messages)
+
+            # # Step 8-10: Initial zonal statistics and filtering
+            # self.add_to_map(zonal_stats_output, zonal_stats_name, messages)
+            # self.add_to_map(agg2_zstats_output, agg2_zstats_name, messages)
+
+            # # Step 11-12: Euclidean allocation steps
+            # self.add_to_map(euc_allo_output, euc_allo_name, messages)
+            # self.add_to_map(euc_allo_clip_output, euc_allo_clip_name, messages)
+            # self.add_to_map(raster_poly_output, raster_poly_name, messages)
+
+            # # Step 13-14: Union and singlepart conversion
+            # # self.add_to_map(union_output, union_name, messages)
+            # if subadmin_boundary:
+            #     self.add_to_map(union_output,
+            #                     f"{output_prefix}_EucAllo_Union",
+            #                     messages)
+            # self.add_to_map(singlepart_output, singlepart_name, messages)
+
+            # # Step 15: Final statistics and output
+            # self.add_to_map(final_zonal_stats_output,
+            #                 final_zonal_stats_name, messages)
+
+            # # Final output with all statistics (always last)
+            # self.add_to_map(final_output, final_output_name, messages)
+
+            if has_active_map:
+                messages.addMessage("\nAdding layers to map...")
+            # Add all outputs to the map in order of operations
+            # Step 1: Add clipped raster - Initial population raster clipped to admin boundary
             self.add_to_map(clipped_raster, clipped_name, messages)
 
-            # Step 2: Binary raster
+            # Step 2: Add binary raster - Converted population values to 1/0 based on presence
             self.add_to_map(os.path.join(
                 output_gdb, binary_name), binary_name, messages)
 
-            # Step 3: Initial polygon conversion
+            # Step 3: Add initial polygon conversion - Binary raster converted to polygons
             self.add_to_map(out_polygons, polygon_name, messages)
 
-            # Step 4-7: Bounding geometry and aggregation steps
+            # Step 4: Add first minimum bounding geometry (MB1) - Convex hulls of initial polygons
             self.add_to_map(mb1_output, mb1_name, messages)
+
+            # Step 5: Add first aggregation result (Agg1) - MB1 polygons aggregated at first distance
             self.add_to_map(agg1_output, agg1_name, messages)
+
+            # Step 6: Add second minimum bounding geometry (MB2) - Convex hulls of first aggregation
             self.add_to_map(mb2_output, mb2_name, messages)
+
+            # Step 7: Add second aggregation result (Agg2) - MB2 polygons aggregated at second distance
             self.add_to_map(agg2_output, agg2_name, messages)
 
-            # Step 8-10: Initial zonal statistics and filtering
+            # Step 8: Add initial zonal statistics - Population statistics for aggregated polygons
             self.add_to_map(zonal_stats_output, zonal_stats_name, messages)
+
+            # Step 9: Add polygons with population threshold calculations
             self.add_to_map(agg2_zstats_output, agg2_zstats_name, messages)
 
-            # Step 11-12: Euclidean allocation steps
+            # Step 10: Add Euclidean allocation raster - Shows areas of influence
             self.add_to_map(euc_allo_output, euc_allo_name, messages)
+
+            # Step 11: Add clipped Euclidean allocation - Allocation confined to admin boundary
             self.add_to_map(euc_allo_clip_output, euc_allo_clip_name, messages)
+
+            # Step 12: Add allocation polygons - Euclidean allocation converted to polygons
             self.add_to_map(raster_poly_output, raster_poly_name, messages)
 
-            # Step 13-14: Union and singlepart conversion
-            self.add_to_map(union_output, union_name, messages)
-            self.add_to_map(singlepart_output, singlepart_name, messages)
+            # Step 13: Add union result if subadmin boundary was provided
+            if subadmin_boundary:
+                self.add_to_map(union_output,
+                                f"{output_prefix}_EucAllo_Union",
+                                messages)
 
-            # Step 15: Final statistics and output
+            # Step 14: Add final zonal statistics table
             self.add_to_map(final_zonal_stats_output,
                             final_zonal_stats_name, messages)
 
-            # Final output with all statistics (always last)
+            # Step 15: Add final output with all statistics
             self.add_to_map(final_output, final_output_name, messages)
+
+            # Add summary of created layers
+            messages.addMessage("\nCreated layers:")
+            messages.addMessage(f"- Clipped raster: {clipped_name}")
+            messages.addMessage(f"- Binary raster: {binary_name}")
+            messages.addMessage(f"- Initial polygons: {polygon_name}")
+            messages.addMessage(
+                f"- First minimum bounding geometry: {mb1_name}")
+            messages.addMessage(f"- First aggregation: {agg1_name}")
+            messages.addMessage(
+                f"- Second minimum bounding geometry: {mb2_name}")
+            messages.addMessage(f"- Second aggregation: {agg2_name}")
+            messages.addMessage(
+                f"- Initial zonal statistics: {zonal_stats_name}")
+            messages.addMessage(f"- Filtered polygons: {agg2_zstats_name}")
+            messages.addMessage(f"- Euclidean allocation: {euc_allo_name}")
+            messages.addMessage(f"- Clipped allocation: {euc_allo_clip_name}")
+            messages.addMessage(f"- Allocation polygons: {raster_poly_name}")
+            if subadmin_boundary:
+                messages.addMessage(
+                    f"- Union result: {output_prefix}_EucAllo_Union")
+            messages.addMessage(
+                f"- Final zonal statistics: {final_zonal_stats_name}")
+            messages.addMessage(f"- Final output: {final_output_name}")
 
             messages.addMessage("\nProcessing completed successfully!")
 
@@ -471,9 +582,7 @@ class RasterProcessing(object):
             if active_map:
                 active_map.addDataFromPath(layer_path)
                 messages.addMessage(f"Added {layer_name} to the map")
-            else:
-                messages.addWarningMessage(
-                    "No active map found to add layers to")
+                return True
+            return False
         except Exception as e:
-            messages.addWarningMessage(
-                f"Could not add {layer_name} to map: {str(e)}")
+            return False
